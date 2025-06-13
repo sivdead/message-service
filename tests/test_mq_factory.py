@@ -18,6 +18,9 @@ class TestMQFactory(unittest.TestCase):
 
     @mock.patch('src.config.settings')
     def test_create_rabbitmq_consumer(self, mock_settings):
+        """
+        Tests that create_consumer returns a RabbitMQConsumer instance with the correct URL when the adapter is set to 'rabbitmq'.
+        """
         mock_settings.mq_adapter = "rabbitmq"
         mock_settings.mq_url = "amqp://test:test@localhost/"
         consumer = create_consumer()
@@ -26,6 +29,12 @@ class TestMQFactory(unittest.TestCase):
 
     @mock.patch('src.config.settings')
     def test_unsupported_adapter(self, mock_settings):
+        """
+        Tests that using an unsupported MQ adapter raises an UnsupportedMQAdapterError.
+        
+        Verifies that both producer and consumer factory functions raise the expected
+        exception when the adapter type is not recognized.
+        """
         mock_settings.mq_adapter = "non_existent_mq"
         mock_settings.mq_url = "some_url"
         with self.assertRaises(UnsupportedMQAdapterError):
@@ -35,6 +44,11 @@ class TestMQFactory(unittest.TestCase):
 
     @mock.patch('src.config.settings')
     def test_missing_url_for_rabbitmq(self, mock_settings):
+        """
+        Tests that a ValueError is raised when the RabbitMQ adapter is selected but the MQ URL is missing.
+        
+        Verifies that both create_producer() and create_consumer() raise a ValueError with the expected message if the configuration lacks the required MQ URL for the RabbitMQ adapter.
+        """
         mock_settings.mq_adapter = "rabbitmq"
         mock_settings.mq_url = None # Simulate missing URL
         with self.assertRaises(ValueError) as P_cm:

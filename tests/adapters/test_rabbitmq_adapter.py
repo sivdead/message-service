@@ -11,6 +11,12 @@ from datetime import datetime, timezone
 # or structure tests to use a single event loop.
 
 def async_test(coro):
+    """
+    Decorator to run an asynchronous test coroutine in a new event loop.
+    
+    Ensures that each decorated test function executes in its own isolated asyncio event loop,
+    allowing asynchronous tests to be run within synchronous test frameworks like unittest.
+    """
     def wrapper(*args, **kwargs):
         loop = asyncio.new_event_loop()
         try:
@@ -27,6 +33,9 @@ class TestRabbitMQProducer(unittest.TestCase):
     @mock.patch('aio_pika.connect_robust')
     @async_test
     async def test_producer_connect_disconnect(self, mock_connect_robust):
+        """
+        Tests that RabbitMQProducer connects and disconnects properly, establishing and closing connections and channels as expected.
+        """
         mock_connection = mock.AsyncMock()
         mock_channel = mock.AsyncMock()
         mock_connect_robust.return_value = mock_connection
@@ -49,6 +58,11 @@ class TestRabbitMQProducer(unittest.TestCase):
     @mock.patch('aio_pika.connect_robust')
     @async_test
     async def test_producer_publish_message(self, mock_connect_robust):
+        """
+        Tests that RabbitMQProducer publishes a message with correct properties to a custom exchange and routing key.
+        
+        Verifies that the exchange is declared, the message is published with the expected body, message ID, headers, and delivery mode, and that the correct routing key is used.
+        """
         mock_connection = mock.AsyncMock()
         mock_channel = mock.AsyncMock()
         mock_exchange = mock.AsyncMock()
@@ -85,6 +99,9 @@ class TestRabbitMQProducer(unittest.TestCase):
 
     @async_test
     async def test_publish_not_connected(self):
+        """
+        Tests that publishing a message without an active connection raises a ConnectionError.
+        """
         producer = RabbitMQProducer(self.TEST_AMQP_URL)
         test_message = Message(body="Test")
         with self.assertRaises(ConnectionError):
@@ -97,6 +114,9 @@ class TestRabbitMQConsumer(unittest.TestCase):
     @mock.patch('aio_pika.connect_robust')
     @async_test
     async def test_consumer_connect_disconnect(self, mock_connect_robust):
+        """
+        Tests that RabbitMQConsumer connects and disconnects properly, establishing and closing the connection and channel as expected.
+        """
         mock_connection = mock.AsyncMock()
         mock_channel = mock.AsyncMock()
         mock_connect_robust.return_value = mock_connection
@@ -119,6 +139,13 @@ class TestRabbitMQConsumer(unittest.TestCase):
     @mock.patch('aio_pika.connect_robust')
     @async_test
     async def test_consumer_subscribe(self, mock_connect_robust):
+        """
+        Tests that RabbitMQConsumer can subscribe to a topic by declaring the exchange and queue,
+        binding the queue to the exchange, and setting the callback function.
+        
+        Verifies that the correct exchange and queue declarations are made, the queue is bound
+        with the specified routing key, and the consumer's internal state is updated accordingly.
+        """
         mock_connection = mock.AsyncMock()
         mock_channel = mock.AsyncMock()
         mock_exchange = mock.AsyncMock()
@@ -161,6 +188,11 @@ class TestRabbitMQConsumer(unittest.TestCase):
     @async_test
     async def test_process_message_text(self, mock_connect_robust):
         # This test is more involved as it simulates receiving a message
+        """
+        Tests that the consumer correctly processes an incoming JSON message and invokes the callback with a decoded Message instance.
+        
+        Simulates receiving an aio_pika.IncomingMessage with JSON content, verifies that the message body is decoded to a string, metadata is preserved, and the message is acknowledged.
+        """
         consumer = RabbitMQConsumer(self.TEST_AMQP_URL)
         consumer._callback = mock.AsyncMock() # Use AsyncMock for async callback
 
@@ -184,6 +216,11 @@ class TestRabbitMQConsumer(unittest.TestCase):
     @mock.patch('aio_pika.connect_robust')
     @async_test
     async def test_process_message_binary(self, mock_connect_robust):
+        """
+        Tests that the consumer correctly processes and delivers a binary message.
+        
+        Verifies that a binary message received by the consumer is passed to the callback with the body preserved as bytes, the message ID set, and the timestamp converted to a datetime object.
+        """
         consumer = RabbitMQConsumer(self.TEST_AMQP_URL)
         consumer._callback = mock.Mock() # Regular mock for sync callback
 
@@ -206,12 +243,20 @@ class TestRabbitMQConsumer(unittest.TestCase):
 
     @async_test
     async def test_subscribe_not_connected(self):
+        """
+        Tests that subscribing without an active connection raises a ConnectionError.
+        """
         consumer = RabbitMQConsumer(self.TEST_AMQP_URL)
         with self.assertRaises(ConnectionError):
             await consumer.subscribe(topic="test", callback=mock.Mock())
 
     @async_test
     async def test_start_consuming_not_subscribed(self):
+        """
+        Tests that starting consumption without a prior queue subscription raises a RuntimeError.
+        
+        Verifies that attempting to call `start_consuming` on a connected `RabbitMQConsumer` instance without subscribing to a queue results in a RuntimeError with an appropriate error message.
+        """
         consumer = RabbitMQConsumer(self.TEST_AMQP_URL)
         # Simulate connected state without actual connection
         consumer.channel = mock.AsyncMock()

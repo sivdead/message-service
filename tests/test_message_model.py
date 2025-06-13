@@ -6,6 +6,11 @@ from src.unified_message_model import Message
 class TestMessageModel(unittest.TestCase):
 
     def test_message_creation_defaults(self):
+        """
+        Tests that a Message instance created with only a body sets default values correctly.
+        
+        Verifies that the body is assigned, the ID is a valid UUIDv4, the timestamp is a recent datetime, and headers default to an empty dictionary.
+        """
         body = "Test message body"
         msg = Message(body=body)
         self.assertEqual(msg.body, body)

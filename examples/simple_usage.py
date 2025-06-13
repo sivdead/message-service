@@ -10,13 +10,22 @@ message_received_event = asyncio.Event()
 received_message_payload = None
 
 async def message_handler(message: Message) -> None:
-    """Callback function to process received messages."""
+    """
+    Handles an incoming message by logging its details and signaling receipt.
+    
+    Stores the message body in a global variable and sets an event to notify that a message has been received.
+    """
     global received_message_payload
     logging.info(f"Consumer: Message received! ID: {message.id}, Body: {message.body!r}, Headers: {message.headers}")
     received_message_payload = message.body
     message_received_event.set() # Signal that the message has been received
 
 async def main():
+    """
+    Coordinates an end-to-end asynchronous message exchange using a producer and consumer.
+    
+    Initializes and connects a message producer and consumer, subscribes the consumer to a topic, and publishes a test message. Waits for the message to be received and verifies its content. Handles connection setup, message publishing, receipt verification, and orderly cleanup of resources, including cancellation of background tasks and disconnection of clients. Logs progress and errors throughout the process.
+    """
     logging.info(f"Starting example with adapter: {settings.mq_adapter}")
     logging.info(f"MQ URL: {settings.mq_url}")
     logging.info(f"Default Topic: {settings.mq_default_topic}")
