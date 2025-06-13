@@ -9,7 +9,14 @@ class UnsupportedMQAdapterError(ValueError):
 
 def create_producer() -> AbstractProducer:
     """
-    Factory function to create a message producer based on the current configuration.
+    Creates and returns a message queue producer instance based on the configured adapter.
+    
+    Raises:
+        ValueError: If required configuration for the selected adapter is missing.
+        UnsupportedMQAdapterError: If the configured adapter is not supported.
+    
+    Returns:
+        An instance of AbstractProducer for the configured message queue adapter.
     """
     if settings.mq_adapter == "rabbitmq":
         if not settings.mq_url:
@@ -24,7 +31,14 @@ def create_producer() -> AbstractProducer:
 
 def create_consumer() -> AbstractConsumer:
     """
-    Factory function to create a message consumer based on the current configuration.
+    Creates and returns a message queue consumer instance based on the configured adapter.
+    
+    Raises:
+        ValueError: If required configuration for the selected adapter is missing.
+        UnsupportedMQAdapterError: If the specified MQ adapter is not supported.
+    
+    Returns:
+        An instance of AbstractConsumer for the configured message queue adapter.
     """
     if settings.mq_adapter == "rabbitmq":
         if not settings.mq_url:
