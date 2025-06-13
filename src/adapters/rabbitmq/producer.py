@@ -1,8 +1,8 @@
 import asyncio
 import aio_pika
-from typing import Any
+from typing import Any, Optional
 from ...mq_abstraction_layer import AbstractProducer
-from ...unified_message_model import Message
+from ...unified_message_model import Message # Assuming Message class has 'delay' and 'headers' attributes
 
 class RabbitMQProducer(AbstractProducer):
     def __init__(self, amqp_url: str):
@@ -45,11 +45,22 @@ class RabbitMQProducer(AbstractProducer):
         self.channel = None
         self.connection = None
 
-    async def publish_message(self, message: Message, topic: str, exchange_name: str = "default_exchange", routing_key: str | None = None, **kwargs: Any) -> None:
+    async def publish_message(
+        self,
+        message: Message,
+        topic: str, # topic can be used as a routing key if routing_key is None
+        exchange_name: str = "default_exchange",
+        routing_key: Optional[str] = None,
+        exchange_type: str = "direct", # Allow specifying exchange type, e.g., 'direct', 'fanout', 'topic', 'x-delayed-message'
+        **kwargs: Any
+    ) -> None:
         """
-        Publishes a message to a RabbitMQ exchange with a specified routing key.
+        Publishes a message to a RabbitMQ exchange with a specified routing key and exchange type.
         
-        If the routing key is not provided, the topic is used as the routing key. The exchange is declared idempotently as a durable direct exchange. The message is published with persistent delivery mode and includes metadata such as message ID, timestamp, and headers.
+        If the routing key is not provided, the topic is used as the routing key.
+        The exchange is declared idempotently and can be of various types (direct, fanout, topic, or custom like x-delayed-message).
+        The message is published with persistent delivery mode and includes metadata such as message ID, timestamp, and headers.
+        If message.delay is set and positive, 'x-delay' header is added for delayed message plugins.
         
         Raises:
             ConnectionError: If the producer is not connected to RabbitMQ.
@@ -65,17 +76,22 @@ class RabbitMQProducer(AbstractProducer):
             # Ensure the exchange exists (idempotent)
             exchange = await self.channel.declare_exchange(
                 name=exchange_name,
-                type=aio_pika.ExchangeType.DIRECT, # Or other types as needed
+                type=exchange_type, # Use the provided exchange type
                 durable=True,
                 **kwargs.get("exchange_declare_kwargs", {})
             )
+
+            # Handle message delay
+            current_headers = message.headers if message.headers is not None else {}
+            if hasattr(message, 'delay') and message.delay is not None and message.delay > 0:
+                current_headers['x-delay'] = message.delay
 
             body_bytes = message.body if isinstance(message.body, bytes) else message.body.encode('utf-8')
 
             properties = aio_pika.BasicProperties(
                 message_id=message.id,
                 timestamp=message.timestamp,
-                headers=message.headers,
+                headers=current_headers, # Use potentially modified headers
                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT # Make messages persistent
             )
 
