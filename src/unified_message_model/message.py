@@ -9,28 +9,32 @@ class Message:
         headers: Dict[str, Any] = None,
         message_id: str = None,
         timestamp: datetime = None,
+        delay: Optional[int] = None,
     ):
         """
-        Initializes a Message instance with a body, optional headers, message ID, and timestamp.
+        Initializes a Message instance with a body, optional headers, message ID, timestamp, and delay.
         
         Args:
             body: The message content, as a string or bytes.
             headers: Optional dictionary of metadata associated with the message.
             message_id: Optional unique identifier for the message. If not provided, a UUID4 string is generated.
             timestamp: Optional datetime for when the message was created. Defaults to the current UTC time.
+            delay: Optional delay in milliseconds for the message.
         """
         self.id: str = message_id if message_id is not None else str(uuid.uuid4())
         self.body: Union[str, bytes] = body
         self.headers: Dict[str, Any] = headers if headers is not None else {}
         self.timestamp: datetime = timestamp if timestamp is not None else datetime.now(timezone.utc)
+        self.delay: Optional[int] = delay
 
     def __repr__(self) -> str:
         """
-        Returns a string representation of the Message instance, including its ID, body, headers, and ISO 8601 formatted timestamp.
+        Returns a string representation of the Message instance, including its ID, body, headers, ISO 8601 formatted timestamp, and delay.
         """
+        delay_repr = f", delay={self.delay}" if self.delay is not None else ""
         return (
             f"Message(id='{self.id}', body='{self.body!r}', "
-            f"headers={self.headers}, timestamp={self.timestamp.isoformat()})"
+            f"headers={self.headers}, timestamp={self.timestamp.isoformat()}{delay_repr})"
         )
 
     # Future methods for serialization/deserialization can be added here

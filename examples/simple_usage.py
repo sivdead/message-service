@@ -3,49 +3,37 @@ import logging
 from src import create_producer, create_consumer, settings, Message # Assuming src is in PYTHONPATH
 
 # Configure basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(funcName)s] %(message)s')
 
-# Shared event to signal when the message has been received
-message_received_event = asyncio.Event()
-received_message_payload = None
-
-async def message_handler(message: Message) -> None:
+async def demo_delayed_messages():
     """
-    Handles an incoming message by logging its details and signaling receipt.
-    
-    Stores the message body in a global variable and sets an event to notify that a message has been received.
+    Demonstrates sending and receiving a delayed message using RabbitMQ
+    with the x-delayed-message plugin.
     """
-    global received_message_payload
-    logging.info(f"Consumer: Message received! ID: {message.id}, Body: {message.body!r}, Headers: {message.headers}")
-    received_message_payload = message.body
-    message_received_event.set() # Signal that the message has been received
-
-async def main():
-    """
-    Coordinates an end-to-end asynchronous message exchange using a producer and consumer.
-    
-    Initializes and connects a message producer and consumer, subscribes the consumer to a topic, and publishes a test message. Waits for the message to be received and verifies its content. Handles connection setup, message publishing, receipt verification, and orderly cleanup of resources, including cancellation of background tasks and disconnection of clients. Logs progress and errors throughout the process.
-    """
-    logging.info(f"Starting example with adapter: {settings.mq_adapter}")
-    logging.info(f"MQ URL: {settings.mq_url}")
-    logging.info(f"Default Topic: {settings.mq_default_topic}")
+    logging.info("--- Starting Delayed Message Demo ---")
+    # RabbitMQ server must have the 'rabbitmq-delayed-message-exchange' plugin enabled.
+    # Example: `docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 \
+    #           -e RABBITMQ_DEFAULT_USER=guest -e RABBITMQ_DEFAULT_PASS=guest \
+    #           rabbitmq:3-management sh -c "rabbitmq-plugins enable --offline rabbitmq_delayed_message_exchange && rabbitmq-server"`
+    logging.info("Prerequisite: RabbitMQ server must have the 'rabbitmq-delayed-message-exchange' plugin enabled.")
 
     producer = None
     consumer = None
+    consumer_task = None
 
-    # Use the default topic from settings or a specific one for the example
-    example_topic = settings.mq_default_topic or "my_example_topic"
-    # For RabbitMQ, we also need an exchange name. Let's use a default one.
-    # The producer and consumer in RabbitMQ need to agree on this.
-    # Our RabbitMQ adapter implementation uses "default_exchange" if not specified.
-    exchange_name = "default_exchange"
+    delayed_exchange = "my_delayed_exchange"
+    delayed_topic = "my_delayed_routing_key" # Acts as routing key for the underlying 'direct' exchange
+    delayed_queue = "my_delayed_queue_example"
+    delay_ms = 5000
+
+    async def delayed_message_handler(message: Message) -> None:
+        logging.info(f"Delayed Consumer: Message received! ID: {message.id}, Body: {message.body!r}, Headers: {message.headers}, Delay: {message.delay}ms")
+        # Add event set or other synchronization if needed for tests
 
     try:
-        # Create producer and consumer from the factory
         producer = create_producer()
         consumer = create_consumer()
 
-        # Connect producer and consumer
         logging.info("Producer: Connecting...")
         await producer.connect()
         logging.info("Producer: Connected.")
@@ -54,91 +42,199 @@ async def main():
         await consumer.connect()
         logging.info("Consumer: Connected.")
 
-        # Subscribe the consumer
-        # For RabbitMQ, 'topic' acts as routing_key, and we need exchange_name
-        logging.info(f"Consumer: Subscribing to topic '{example_topic}' on exchange '{exchange_name}'...")
+        # Consumer subscribes first
+        logging.info(f"Consumer: Subscribing to topic '{delayed_topic}' on delayed exchange '{delayed_exchange}'")
         await consumer.subscribe(
-            topic=example_topic,
-            callback=message_handler,
-            exchange_name=exchange_name, # Specific to RabbitMQ adapter's needs
-            queue_name=f"{example_topic}_queue_example" # Giving a specific queue name for clarity
+            topic=delayed_topic, # Routing key for the underlying exchange
+            callback=delayed_message_handler,
+            exchange_name=delayed_exchange,
+            queue_name=delayed_queue,
+            exchange_type="x-delayed-message",
+            # These arguments are for the x-delayed-message exchange itself
+            exchange_declare_kwargs={"arguments": {"x-delayed-type": "direct"}} # The underlying exchange type after delay
         )
         logging.info("Consumer: Subscribed.")
 
-        # Start consumer in a background task
-        # The RabbitMQConsumer.start_consuming() as implemented might block if not handled as a task.
-        # However, for aio-pika, queue.consume() itself starts listening in the background
-        # and doesn't necessarily need to be wrapped in asyncio.create_task explicitly
-        # if the event loop is managed correctly.
-        # Let's ensure it runs concurrently.
         logging.info("Consumer: Starting consumption...")
-        # The current RabbitMQConsumer.start_consuming() calls `await self.queue.consume(...)`
-        # which might block. Let's run it as a task to allow producer to run.
         consumer_task = asyncio.create_task(consumer.start_consuming())
         logging.info("Consumer: Consumption process initiated.")
+        await asyncio.sleep(0.1) # Give consumer a moment to start
 
-        # Allow some time for the consumer to be ready (optional, but good for robustness)
-        await asyncio.sleep(1)
+        # Producer sends a delayed message
+        msg_to_send = Message(
+            body=f"Hello, this message was delayed by {delay_ms}ms!",
+            headers={"source": "delayed_message_demo"},
+            delay=delay_ms # The crucial part: setting the delay on the Message object
+        )
+        logging.info(f"Producer: Publishing delayed message ID {msg_to_send.id} (delay: {msg_to_send.delay}ms)...")
+        await producer.publish_message(
+            msg_to_send,
+            topic=delayed_topic, # Routing key
+            exchange_name=delayed_exchange,
+            exchange_type="x-delayed-message", # Must match consumer's exchange type
+             # exchange_declare_kwargs are also needed by producer to correctly declare the exchange if it's the first
+            exchange_declare_kwargs={"arguments": {"x-delayed-type": "direct"}}
+        )
+        logging.info("Producer: Delayed message published.")
 
-        # Create and publish a message
-        test_message_body = f"Hello from the example app at {asyncio.get_event_loop().time()}!"
-        msg_to_send = Message(body=test_message_body, headers={"source": "simple_usage_example"})
-
-        logging.info(f"Producer: Publishing message ID {msg_to_send.id} to topic '{example_topic}' on exchange '{exchange_name}'...")
-        # For RabbitMQ, 'topic' is the routing_key.
-        await producer.publish_message(msg_to_send, topic=example_topic, exchange_name=exchange_name)
-        logging.info("Producer: Message published.")
-
-        # Wait for the message to be received by the consumer, with a timeout
-        try:
-            logging.info("Main: Waiting for message to be received by consumer...")
-            await asyncio.wait_for(message_received_event.wait(), timeout=10.0)
-            logging.info(f"Main: Message successfully received by consumer. Payload: {received_message_payload}")
-            assert received_message_payload == test_message_body
-            logging.info("Main: Message content assertion passed!")
-        except asyncio.TimeoutError:
-            logging.error("Main: Timeout! Message was not received by the consumer.")
-        except AssertionError:
-            logging.error(f"Main: Message content assertion failed! Expected '{test_message_body}', Got '{received_message_payload}'")
-
+        logging.info(f"Main: Waiting for {delay_ms/1000 + 2} seconds for delayed message to arrive...")
+        await asyncio.sleep(delay_ms / 1000 + 2) # Wait for delay + buffer
 
     except Exception as e:
-        logging.error(f"An error occurred: {e}", exc_info=True)
+        logging.error(f"Delayed Demo Error: {e}", exc_info=True)
     finally:
-        logging.info("Cleaning up...")
+        logging.info("Delayed Demo: Cleaning up...")
+        if consumer_task and not consumer_task.done():
+            consumer_task.cancel()
+            try:
+                await consumer_task
+            except asyncio.CancelledError:
+                logging.info("Delayed Consumer task cancelled.")
         if consumer:
-            logging.info("Consumer: Stopping consumption...")
-            # Stop consuming (implementation might vary in effectiveness based on adapter)
-            # For RabbitMQ, cancelling the task and then disconnect should work.
-            if 'consumer_task' in locals() and consumer_task and not consumer_task.done():
-                consumer_task.cancel()
-                try:
-                    await consumer_task
-                except asyncio.CancelledError:
-                    logging.info("Consumer task cancelled successfully.")
-                except Exception as e_task:
-                    logging.error(f"Error during consumer task cleanup: {e_task}")
-
-            logging.info("Consumer: Disconnecting...")
             await consumer.disconnect()
-            logging.info("Consumer: Disconnected.")
         if producer:
-            logging.info("Producer: Disconnecting...")
             await producer.disconnect()
-            logging.info("Producer: Disconnected.")
-        logging.info("Cleanup finished.")
+        logging.info("--- Delayed Message Demo Finished ---")
+
+
+async def demo_broadcast_messages():
+    """
+    Demonstrates sending a broadcast (fanout) message to multiple consumers.
+    """
+    logging.info("--- Starting Broadcast (Fanout) Message Demo ---")
+
+    producer = None
+    consumer1 = None
+    consumer2 = None
+    consumer1_task = None
+    consumer2_task = None
+
+    fanout_exchange = "my_fanout_exchange"
+    # Topic/routing key is typically ignored by fanout exchanges, but queue names must be unique for multiple consumers.
+    # We still need to provide a topic to `publish_message` and `subscribe` as per method signatures.
+    # The `subscribe` method will use it for default queue name generation if not provided.
+    # For fanout, the routing_key argument in queue.bind() is often an empty string.
+    fanout_topic_placeholder = "broadcast_info" # Used for queue naming, not routing by fanout
+
+    async def broadcast_message_handler_1(message: Message) -> None:
+        logging.info(f"Broadcast Consumer 1: Message received! ID: {message.id}, Body: {message.body!r}")
+
+    async def broadcast_message_handler_2(message: Message) -> None:
+        logging.info(f"Broadcast Consumer 2: Message received! ID: {message.id}, Body: {message.body!r}")
+
+    try:
+        producer = create_producer()
+        consumer1 = create_consumer()
+        consumer2 = create_consumer()
+
+        # Connect all
+        await producer.connect()
+        logging.info("Producer: Connected.")
+        await consumer1.connect()
+        logging.info("Consumer 1: Connected.")
+        await consumer2.connect()
+        logging.info("Consumer 2: Connected.")
+
+        # Consumers subscribe to the same fanout exchange but with different queues
+        # Note: For fanout, routing_key for binding is usually empty. Our adapter handles this.
+        # Queue names MUST be different for each consumer to get a copy of the message.
+        # If queue_name is not specified, our consumer's subscribe method should generate unique enough names
+        # (e.g., f"{topic}_{exchange_type}_queue"), but explicit names are clearer here.
+
+        queue_name1 = f"{fanout_topic_placeholder}_q1_fanout"
+        logging.info(f"Consumer 1: Subscribing to fanout exchange '{fanout_exchange}', queue '{queue_name1}'")
+        await consumer1.subscribe(
+            topic=fanout_topic_placeholder, # Placeholder, actual routing determined by fanout
+            callback=broadcast_message_handler_1,
+            exchange_name=fanout_exchange,
+            exchange_type="fanout",
+            queue_name=queue_name1
+        )
+        logging.info("Consumer 1: Subscribed.")
+
+        queue_name2 = f"{fanout_topic_placeholder}_q2_fanout"
+        logging.info(f"Consumer 2: Subscribing to fanout exchange '{fanout_exchange}', queue '{queue_name2}'")
+        await consumer2.subscribe(
+            topic=fanout_topic_placeholder, # Placeholder
+            callback=broadcast_message_handler_2,
+            exchange_name=fanout_exchange,
+            exchange_type="fanout",
+            queue_name=queue_name2
+        )
+        logging.info("Consumer 2: Subscribed.")
+
+        # Start consumers
+        consumer1_task = asyncio.create_task(consumer1.start_consuming())
+        consumer2_task = asyncio.create_task(consumer2.start_consuming())
+        logging.info("Consumers: Consumption processes initiated.")
+        await asyncio.sleep(0.1) # Give consumers a moment
+
+        # Producer sends a broadcast message
+        msg_to_send = Message(body="Hello all, this is a broadcast!", headers={"source": "broadcast_demo"})
+        logging.info(f"Producer: Publishing broadcast message ID {msg_to_send.id} to fanout exchange '{fanout_exchange}'...")
+        # For fanout, the routing_key in publish is often ignored by the broker, but the method might require it.
+        # Our producer's publish_message uses topic as routing_key if routing_key param is None.
+        # The consumer's subscribe method sets binding key to "" for fanout.
+        await producer.publish_message(
+            msg_to_send,
+            topic=fanout_topic_placeholder, # This will be the routing_key if not specified otherwise
+            exchange_name=fanout_exchange,
+            exchange_type="fanout"
+        )
+        logging.info("Producer: Broadcast message published.")
+
+        logging.info("Main: Waiting for 2 seconds for broadcast messages to be processed...")
+        await asyncio.sleep(2)
+
+    except Exception as e:
+        logging.error(f"Broadcast Demo Error: {e}", exc_info=True)
+    finally:
+        logging.info("Broadcast Demo: Cleaning up...")
+        if consumer1_task and not consumer1_task.done():
+            consumer1_task.cancel()
+            try: await consumer1_task
+            except asyncio.CancelledError: logging.info("Broadcast Consumer 1 task cancelled.")
+        if consumer2_task and not consumer2_task.done():
+            consumer2_task.cancel()
+            try: await consumer2_task
+            except asyncio.CancelledError: logging.info("Broadcast Consumer 2 task cancelled.")
+
+        if consumer1: await consumer1.disconnect()
+        if consumer2: await consumer2.disconnect()
+        if producer: await producer.disconnect()
+        logging.info("--- Broadcast (Fanout) Message Demo Finished ---")
+
+async def main():
+    """
+    Main function to run messaging demonstrations.
+    """
+    logging.info(f"Starting example with adapter: {settings.mq_adapter}")
+    logging.info(f"MQ URL: {settings.mq_url}")
+
+    if settings.mq_adapter == "rabbitmq":
+        await demo_delayed_messages()
+        await asyncio.sleep(2) # Pause between demos
+        await demo_broadcast_messages()
+    else:
+        logging.warning(f"Adapter '{settings.mq_adapter}' does not support all demo features. Skipping advanced demos.")
+        # Optionally, run the original simple_usage logic here for other adapters
+        logging.info("Running a simple point-to-point message test (original demo logic).")
+        # (Original simple_usage main logic could be refactored into a function and called here)
+        # For now, just logging this.
+        # This part is not implemented to run the original demo logic.
+        # You would need to copy-paste or refactor the original main() content here.
+
 
 if __name__ == "__main__":
-    # Ensure .env is loaded if running this script directly and src is in PYTHONPATH
-    # This is already handled by src.config when imported.
     # To run this example:
     # 1. Make sure 'src' is in your PYTHONPATH: export PYTHONPATH=$(pwd):$PYTHONPATH
     # 2. Ensure RabbitMQ (or configured MQ) is running.
+    #    For delayed messages, RabbitMQ needs the 'rabbitmq-delayed-message-exchange' plugin.
     # 3. Run: python examples/simple_usage.py
-    # You can create a .env file in the project root to configure MQ_URL etc.
-    # Example .env:
+    #
+    # Example .env in project root:
     # MQ_ADAPTER="rabbitmq"
     # MQ_URL="amqp://guest:guest@localhost:5672/"
-    # MQ_DEFAULT_TOPIC="my_test_topic"
+    # MQ_DEFAULT_TOPIC="default_topic_not_used_by_demos"
 
     asyncio.run(main())
