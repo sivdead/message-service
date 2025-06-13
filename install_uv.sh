@@ -12,7 +12,17 @@
 
 # Some versions of ksh have no `local` keyword. Alias it to `typeset`, but
 # beware this makes variables global with f()-style function syntax in ksh93.
-# mksh has this alias by default.
+# Dummy function to ensure compatibility with shells that expect a 'has_local' function.
+#
+# This function does nothing and is present to avoid errors in shells where 'has_local' is referenced.
+#
+# Arguments:
+#
+# None.
+#
+# Returns:
+#
+# None.
 has_local() {
     # shellcheck disable=SC2034  # deliberately unused
     local _has_local
@@ -59,6 +69,17 @@ read -r RECEIPT <<EORECEIPT
 EORECEIPT
 RECEIPT_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/uv"
 
+# Prints usage and help information for the uv installer script.
+#
+# Outputs:
+#
+# * Displays a description of the installer, installation locations, and available command-line options to STDOUT.
+#
+# Example:
+#
+# ```bash
+# usage
+# ```
 usage() {
     # print help (this cat/EOF stuff is a "heredoc" string)
     cat <<EOF
@@ -94,6 +115,23 @@ OPTIONS:
 EOF
 }
 
+# Downloads, verifies, unpacks, and installs the appropriate "uv" binary archive for the current platform.
+#
+# Detects the user's architecture, selects the correct prebuilt archive, downloads it (and optionally the updater), verifies checksums if available, unpacks the archive, and installs the binaries and libraries to the appropriate directory. Optionally modifies shell profile files to add the install directory to PATH and writes an installation receipt if enabled.
+#
+# Arguments:
+#
+# * Command-line options such as `--help`, `--quiet`, `--verbose`, and `--no-modify-path`.
+#
+# Returns:
+#
+# * 0 on successful installation, non-zero on error.
+#
+# Example:
+#
+# ```bash
+# download_binary_and_run_installer --verbose
+# ```
 download_binary_and_run_installer() {
     downloader --check
     need_cmd uname
@@ -479,7 +517,21 @@ download_binary_and_run_installer() {
 }
 
 # Replaces $HOME with the variable name for display to the user,
-# only if $HOME is defined.
+# Replaces the absolute $HOME path in the input string with the literal '$HOME' if $HOME is defined.
+#
+# Arguments:
+#
+# * A string that may contain the absolute $HOME path.
+#
+# Returns:
+#
+# * The input string with all occurrences of the absolute $HOME path replaced by '$HOME', or the original string if $HOME is not set.
+#
+# Example:
+#
+# ```bash
+# replace_home "/home/user/.local/bin" # returns "$HOME/.local/bin" if $HOME is "/home/user"
+# ```
 replace_home() {
     local _str="$1"
 
@@ -490,6 +542,21 @@ replace_home() {
     fi
 }
 
+# Returns a JSON object representing binary aliases for the specified architecture.
+#
+# Arguments:
+#
+# * Architecture string (e.g., "x86_64-unknown-linux-gnu")
+#
+# Returns:
+#
+# * A JSON object (currently always empty) mapping binary names to their aliases for the given architecture.
+#
+# Example:
+#
+# ```bash
+# json_binary_aliases "x86_64-unknown-linux-gnu" # outputs '{}'
+# ```
 json_binary_aliases() {
     local _arch="$1"
 
@@ -572,6 +639,22 @@ json_binary_aliases() {
     esac
 }
 
+# Returns aliases for a given binary and architecture.
+#
+# Arguments:
+#
+# * Binary name.
+# * Architecture string.
+#
+# Returns:
+#
+# * An empty string, as no aliases are currently defined for any binary or architecture.
+#
+# Example:
+#
+# ```bash
+# aliases_for_binary "uv" "x86_64-unknown-linux-gnu" # returns ""
+# ```
 aliases_for_binary() {
     local _bin="$1"
     local _arch="$2"
@@ -751,6 +834,29 @@ aliases_for_binary() {
     esac
 }
 
+# Selects the appropriate prebuilt archive filename for the given architecture string.
+#
+# Arguments:
+#
+# * Architecture string (e.g., "x86_64-unknown-linux-gnu")
+#
+# Returns:
+#
+# * The filename of the best-matching archive for the specified architecture, printed to stdout.
+#
+# Outputs:
+#
+# * Prints the archive filename to stdout if a compatible archive is found.
+# * Prints an error message and exits if no suitable archive is available for the platform.
+#
+# Example:
+#
+# ```bash
+# select_archive_for_arch "x86_64-unknown-linux-gnu"
+# # Output: uv-x86_64-unknown-linux-gnu.tar.gz
+# ```
+#
+# The function checks runtime conditions such as minimum glibc version for certain Linux targets and falls back to alternative archives (e.g., musl) if needed. Exits with an error if no compatible archive is found.
 select_archive_for_arch() {
     local _true_arch="$1"
     local _archive
@@ -1018,6 +1124,28 @@ select_archive_for_arch() {
     err "no compatible downloads were found for your platform $_true_arch"
 }
 
+# Checks if the system's glibc version meets the specified minimum major and minor version requirements.
+#
+# Arguments:
+#
+# * Minimum glibc major version required.
+# * Minimum glibc minor (series) version required.
+#
+# Returns:
+#
+# * 0 if the system's glibc version is equal to or newer than the specified minimum.
+# * 1 if the system's glibc version is older than required.
+#
+# Example:
+#
+# ```bash
+# check_glibc 2 28
+# if [ $? -eq 0 ]; then
+#   echo "glibc is recent enough"
+# else
+#   echo "glibc is too old"
+# fi
+# ```
 check_glibc() {
     local _min_glibc_major="$1"
     local _min_glibc_series="$2"
@@ -1035,7 +1163,28 @@ check_glibc() {
 }
 
 # See discussion of late-bound vs early-bound for why we use single-quotes with env vars
-# shellcheck disable=SC2016
+# Installs binaries and libraries to the appropriate directory and configures the user's environment.
+#
+# Determines the installation directory and layout based on environment variables or defaults, moves binaries and libraries from the source directory to the install location, sets executable permissions, and generates environment scripts to add the install directory to the user's PATH. Modifies shell profile files to source these scripts unless path modification is disabled. Warns if installed binaries are shadowed by existing commands in PATH.
+#
+# Globals:
+# * UV_INSTALL_DIR, CARGO_DIST_FORCE_INSTALL_DIR, UNMANAGED_INSTALL, XDG_BIN_HOME, XDG_DATA_HOME, HOME, NO_MODIFY_PATH, APP_NAME, RECEIPT, PATH
+#
+# Arguments:
+# * Source directory containing binaries and libraries to install.
+# * Space-separated list of binary filenames to install.
+# * Space-separated list of dynamic library filenames to install.
+# * Space-separated list of static library filenames to install.
+# * Architecture string for alias resolution.
+#
+# Outputs:
+# * Prints installation progress and warnings to STDOUT/STDERR.
+#
+# Example:
+#
+# ```bash
+# install "/tmp/unpacked" "uv" "libuv.so" "libuv.a" "x86_64-unknown-linux-gnu"
+# ```
 install() {
     # This code needs to both compute certain paths for itself to write to, and
     # also write them to shell/rc files so that they can look them up to e.g.
@@ -1284,6 +1433,23 @@ install() {
     fi
 }
 
+# Checks if any binaries to be installed are shadowed by existing commands in the user's PATH.
+#
+# Arguments:
+#
+# * _install_dir: The directory where the binaries will be installed.
+# * _bins: A space-separated list of binary names to check.
+#
+# Returns:
+#
+# * A space-separated list of binary names that are shadowed by other commands in PATH (i.e., commands with the same name exist elsewhere in PATH and are not the ones in the install directory).
+#
+# Example:
+#
+# ```bash
+# check_for_shadowed_bins "$HOME/.local/bin" "uv foo bar"
+# # Might return "foo bar" if those commands already exist elsewhere in PATH.
+# ```
 check_for_shadowed_bins() {
     local _install_dir="$1"
     local _bins="$2"
@@ -1299,6 +1465,22 @@ check_for_shadowed_bins() {
     echo "$_shadowed_bins"
 }
 
+# Returns the appropriate home directory for a given shell script, considering ZDOTDIR for zsh scripts.
+#
+# Arguments:
+#
+# * script: The name of the shell script (e.g., `.zshrc`, `.bashrc`).
+#
+# Returns:
+#
+# * The home directory path to use for the specified script, using ZDOTDIR for zsh scripts if set, otherwise HOME.
+#
+# Example:
+#
+# ```bash
+# print_home_for_script .zshrc # might return /home/user/zsh
+# print_home_for_script .bashrc # returns /home/user
+# ```
 print_home_for_script() {
     local script="$1"
 
@@ -1321,6 +1503,7 @@ print_home_for_script() {
     echo "$_home"
 }
 
+# ```
 add_install_dir_to_ci_path() {
     # Attempt to do CI-specific rituals to get the install-dir on PATH faster
     local _install_dir="$1"
@@ -1337,6 +1520,27 @@ add_install_dir_to_ci_path() {
     fi
 }
 
+# Adds a line to the user's shell rc file to source an environment script that prepends the install directory to PATH if not already present.
+#
+# This function creates an environment script (for POSIX or fish shells) that checks and prepends the install directory to PATH. It then ensures the appropriate source line is present in the user's shell rc file, creating the rc file if necessary. The function avoids duplicate entries and uses the most portable syntax for each shell.
+#
+# Arguments:
+#
+# * Expression for the install directory (as used in the env script)
+# * Path to the environment script to be sourced
+# * Expression for the environment script path (as used in the rc file)
+# * List of rc file names to check or create (space-separated)
+# * Shell type ("sh" or "fish")
+#
+# Returns:
+#
+# * Returns 1 if the source line was added to the rc file; otherwise returns 0.
+#
+# Example:
+#
+# ```bash
+# add_install_dir_to_path '$HOME/.local/bin' "$HOME/.config/uv/env" '$HOME/.config/uv/env' ".profile .bashrc" "sh"
+# ```
 add_install_dir_to_path() {
     # Edit rcfiles ($HOME/.profile) to add install_dir to $PATH
     #
@@ -1434,6 +1638,24 @@ add_install_dir_to_path() {
     fi
 }
 
+# Adds a command to source the environment script for the install directory to all existing shell rc files in the provided list.
+#
+# Globals:
+#   HOME - Used to resolve absolute paths to rc files.
+#
+# Arguments:
+#   _install_dir_expr - Shell expression for the install directory.
+#   _env_script_path - Path to the environment script to be sourced.
+#   _env_script_path_expr - Shell expression for the environment script path.
+#   _rcfiles - Space-separated list of rc file names (relative to home).
+#   _shell - Shell type (e.g., bash, zsh).
+#
+# Outputs:
+#   Modifies rc files to source the environment script, ensuring the install directory is added to PATH.
+#
+# Example:
+#
+#   shotgun_install_dir_to_path '$HOME/.local/bin' '$HOME/.config/uv/env' '$HOME/.config/uv/env' '.profile .bashrc' 'bash'
 shotgun_install_dir_to_path() {
     # Edit rcfiles ($HOME/.profile) to add install_dir to $PATH
     # (Shotgun edition - write to all provided files that exist rather than just the first)
@@ -1464,6 +1686,22 @@ shotgun_install_dir_to_path() {
     fi
 }
 
+# Writes a POSIX shell script that prepends the install directory to PATH if not already present.
+#
+# Arguments:
+#
+# * Expression for the install directory to add to PATH.
+# * Path where the environment script should be written.
+#
+# Outputs:
+#
+# * Writes a shell script to the specified path that ensures the install directory is included in PATH.
+#
+# Example:
+#
+# ```bash
+# write_env_script_sh "\$HOME/.local/bin" "\$HOME/.config/uv/env"
+# ```
 write_env_script_sh() {
     # write this env script to the given path (this cat/EOF stuff is a "heredoc" string)
     local _install_dir_expr="$1"
@@ -1483,6 +1721,18 @@ esac
 EOF
 }
 
+# Writes a Fish shell environment script that prepends the install directory to PATH if not already present.
+#
+# Arguments:
+#
+# * The install directory expression to add to PATH.
+# * The path where the environment script should be written.
+#
+# Example:
+#
+# ```bash
+# write_env_script_fish "/home/user/.local/bin" "/home/user/.config/uv/env.fish"
+# ```
 write_env_script_fish() {
     # write this env script to the given path (this cat/EOF stuff is a "heredoc" string)
     local _install_dir_expr="$1"
@@ -1495,6 +1745,19 @@ end
 EOF
 }
 
+# Returns the path to the current executable for system architecture detection on Linux.
+#
+# If `/proc/self/exe` is available, returns its path. Otherwise, falls back to the user's shell or `/bin/sh` if necessary, issuing warnings if fallbacks are used.
+#
+# Returns:
+#
+# * The absolute path to the executable used for architecture detection.
+#
+# Example:
+#
+# ```bash
+# exe_path=$(get_current_exe)
+# ```
 get_current_exe() {
     # Returns the executable used for system architecture detection
     # This is only run on Linux
@@ -1514,6 +1777,7 @@ get_current_exe() {
     echo "$_current_exe"
 }
 
+# ```
 get_bitness() {
     need_cmd head
     # Architecture detection without dependencies beyond coreutils.
@@ -1534,6 +1798,21 @@ get_bitness() {
     fi
 }
 
+# Checks if the given ELF executable is for the amd64 (x86_64) architecture.
+#
+# Arguments:
+#
+# * Path to the ELF executable file to inspect.
+#
+# Returns:
+#
+# * 0 (success) if the executable is amd64 (e_machine == 0x3E), non-zero otherwise.
+#
+# Example:
+#
+# ```bash
+# is_host_amd64_elf /proc/self/exe
+# ```
 is_host_amd64_elf() {
     local _current_exe=$1
 
@@ -1547,6 +1826,25 @@ is_host_amd64_elf() {
     [ "$_current_exe_machine" = "$(printf '\076')" ]
 }
 
+# Determines the endianness of the given ELF executable and returns the CPU type string with the appropriate endianness suffix.
+#
+# Arguments:
+#
+# * _current_exe: Path to the ELF executable to inspect.
+# * cputype: Base CPU type string.
+# * suffix_eb: Suffix to append for big-endian.
+# * suffix_el: Suffix to append for little-endian.
+#
+# Returns:
+#
+# * The CPU type string with the correct endianness suffix based on the ELF header.
+#
+# Example:
+#
+# ```bash
+# get_endianness /proc/self/exe loongarch -eb -el
+# # Might return "loongarch-el" or "loongarch-eb"
+# ```
 get_endianness() {
     local _current_exe=$1
     local cputype=$2
@@ -1570,7 +1868,25 @@ get_endianness() {
 
 # Detect the Linux/LoongArch UAPI flavor, with all errors being non-fatal.
 # Returns 0 or 234 in case of successful detection, 1 otherwise (/tmp being
-# noexec, or other causes).
+# Detects the Linux/LoongArch kernel ABI flavor by running an embedded binary.
+#
+# Returns:
+#
+# * 0 if the system uses the upstream ("new world") LoongArch UAPI.
+# * 234 if the system uses the old-world LoongArch UAPI.
+# * 1 if detection fails due to missing tools or execution errors.
+#
+# Example:
+#
+# ```bash
+# if check_loongarch_uapi; then
+#   echo "Upstream LoongArch UAPI detected"
+# elif [ $? -eq 234 ]; then
+#   echo "Old-world LoongArch UAPI detected"
+# else
+#   echo "LoongArch UAPI detection failed"
+# fi
+# ```
 check_loongarch_uapi() {
     need_cmd base64
 
@@ -1605,6 +1921,25 @@ EOF
     return "$_retval"
 }
 
+# Ensures the system's Linux/LoongArch kernel ABI is compatible with the distribution.
+#
+# Calls `check_loongarch_uapi` to detect the ABI flavor. Exits with an error if the required ABI is not present, or warns if the ABI cannot be determined.
+#
+# Globals:
+#
+# * Relies on `err` and `warn` for error and warning output.
+#
+# Returns:
+#
+# * 0 if the ABI is compatible.
+# * Exits with error if the ABI is incompatible.
+# * Returns 0 with warnings if the ABI cannot be determined.
+#
+# Example:
+#
+# ```bash
+# ensure_loongarch_uapi
+# ```
 ensure_loongarch_uapi() {
     check_loongarch_uapi
     case $? in
@@ -1622,6 +1957,22 @@ ensure_loongarch_uapi() {
     esac
 }
 
+# Detects the operating system and CPU architecture, normalizes their names, and sets the global RETVAL variable to a canonical architecture string.
+#
+# This function inspects the current platform using uname and other system tools, handling special cases for macOS (Rosetta, arm64), Linux (glibc vs musl, bitness), Solaris/illumos, Windows, and various CPU types. It also detects libc type, endianness, and ABI variants where relevant. The resulting architecture string is stored in the global RETVAL variable for use in selecting compatible binaries.
+#
+# Globals:
+# * RETVAL: Set to the detected architecture string (e.g., "x86_64-unknown-linux-gnu").
+#
+# Returns:
+# * None (sets RETVAL global).
+#
+# Example:
+#
+# ```bash
+# get_architecture
+# echo "$RETVAL"  # Might output "aarch64-apple-darwin"
+# ```
 get_architecture() {
     local _ostype
     local _cputype
@@ -1854,18 +2205,43 @@ get_architecture() {
     RETVAL="$_arch"
 }
 
+# Prints a message to standard output unless quiet mode is enabled.
+#
+# Arguments:
+#
+# * Message to print.
+#
+# Outputs:
+#
+# * The message to standard output if quiet mode is not active.
 say() {
     if [ "0" = "$PRINT_QUIET" ]; then
         echo "$1"
     fi
 }
 
+# * The message to print.
 say_verbose() {
     if [ "1" = "$PRINT_VERBOSE" ]; then
         echo "$1"
     fi
 }
 
+# Prints a warning message to stderr unless quiet mode is enabled.
+#
+# Arguments:
+#
+# * Message to display as a warning.
+#
+# Outputs:
+#
+# * The warning message is printed to stderr, prefixed with "WARN" in red if supported.
+#
+# Example:
+#
+# ```bash
+# warn "This is a warning"
+# ```
 warn() {
     if [ "0" = "$PRINT_QUIET" ]; then
         local red
@@ -1876,6 +2252,25 @@ warn() {
     fi
 }
 
+# Prints an error message to stderr and exits the script with status 1.
+#
+# Arguments:
+#
+# * Error message to display.
+#
+# Outputs:
+#
+# * The error message is printed to stderr unless quiet mode is enabled.
+#
+# Returns:
+#
+# * Exits the script with status 1.
+#
+# Example:
+#
+# ```bash
+# err "Failed to download archive"
+# ```
 err() {
     if [ "0" = "$PRINT_QUIET" ]; then
         local red
@@ -1887,37 +2282,100 @@ err() {
     exit 1
 }
 
+# ```
 need_cmd() {
     if ! check_cmd "$1"
     then err "need '$1' (command not found)"
     fi
 }
 
+# Checks if a command exists in the system's PATH.
+#
+# Arguments:
+#
+# * Name of the command to check.
+#
+# Returns:
+#
+# * 0 if the command exists, non-zero otherwise.
+#
+# Example:
+#
+# ```bash
+# check_cmd curl && echo "curl is available"
+# ```
 check_cmd() {
     command -v "$1" > /dev/null 2>&1
     return $?
 }
 
+# Asserts that a variable is non-empty, exiting with an error if it is empty.
+#
+# Arguments:
+#
+# * Value to check for non-emptiness.
+# * Name or description of the variable (used in the error message).
+#
+# Example:
+#
+# ```bash
+# assert_nz "$HOME" "HOME"
+# ```
 assert_nz() {
     if [ -z "$1" ]; then err "assert_nz $2"; fi
 }
 
 # Run a command that should never fail. If the command fails execution
 # will immediately terminate with an error showing the failing
-# command.
+# ```
 ensure() {
     if ! "$@"; then err "command failed: $*"; fi
 }
 
 # This is just for indicating that commands' results are being
 # intentionally ignored. Usually, because it's being executed
-# as part of error handling.
+# Runs a command and ignores any errors or non-zero exit status.
+#
+# Arguments:
+#
+# * Any command and its arguments to execute.
+#
+# Example:
+#
+# ```bash
+# ignore rm -f /tmp/somefile
+# ```
 ignore() {
     "$@"
 }
 
 # This wraps curl or wget. Try curl first, if not installed,
-# use wget instead.
+# Downloads a file from a given URL using either curl or wget, with optional authorization header.
+#
+# Globals:
+#
+# * AUTH_TOKEN: If set, used as a Bearer token for HTTP Authorization.
+#
+# Arguments:
+#
+# * --check: If specified as the first argument, checks for the presence of curl or wget and errors if neither is found.
+# * URL: The URL to download from.
+# * DEST: The destination file path to save the downloaded content.
+#
+# Outputs:
+#
+# * Downloads the file to the specified destination.
+#
+# Returns:
+#
+# * Exits with an error if neither curl nor wget is available, or if the download fails.
+#
+# Example:
+#
+# ```bash
+# downloader "https://example.com/file.tar.gz" "/tmp/file.tar.gz"
+# downloader --check
+# ```
 downloader() {
     if check_cmd curl
     then _dld=curl
@@ -1944,6 +2402,24 @@ downloader() {
     fi
 }
 
+# Verifies the checksum of a file against a provided value using the specified algorithm.
+#
+# Arguments:
+#
+# * Path to the file to verify.
+# * Checksum algorithm style (e.g., sha256, sha512, sha3-256, sha3-512, blake2s, blake2b).
+# * Expected checksum value.
+#
+# Returns:
+#
+# * Exits with an error if the calculated checksum does not match the expected value.
+# * Returns 0 if verification is skipped due to missing tools or unknown style, or if the checksum matches.
+#
+# Example:
+#
+# ```bash
+# verify_checksum "archive.tar.gz" "sha256" "abcdef123456..."
+# ```
 verify_checksum() {
     local _file="$1"
     local _checksum_style="$2"

@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 
 class RabbitMQConsumer(AbstractConsumer):
     def __init__(self, amqp_url: str):
+        """
+        Initializes a RabbitMQConsumer instance with the specified AMQP URL.
+        
+        Sets up internal attributes for connection, channel, queue, consumption task, and message callback, all initially unset.
+        """
         self.amqp_url = amqp_url
         self.connection: aio_pika.RobustConnection | None = None
         self.channel: aio_pika.Channel | None = None
@@ -15,6 +20,11 @@ class RabbitMQConsumer(AbstractConsumer):
         self._callback: Callable[[Message], Any] | None = None
 
     async def connect(self, **kwargs: Any) -> None:
+        """
+        Establishes an asynchronous robust connection to RabbitMQ and creates a channel.
+        
+        Additional connection parameters can be provided via keyword arguments. Raises an exception if the connection or channel setup fails.
+        """
         try:
             self.connection = await aio_pika.connect_robust(self.amqp_url, **kwargs)
             self.channel = await self.connection.channel()
@@ -26,6 +36,11 @@ class RabbitMQConsumer(AbstractConsumer):
             raise
 
     async def disconnect(self) -> None:
+        """
+        Closes the RabbitMQ consumer's channel and connection, ensuring message consumption is stopped first.
+        
+        This method halts any ongoing message consumption, then closes the AMQP channel and connection if they are open, and resets related attributes.
+        """
         await self.stop_consuming() # Ensure consuming stops before disconnect
         if self.channel:
             await self.channel.close()
@@ -37,6 +52,11 @@ class RabbitMQConsumer(AbstractConsumer):
         self.connection = None
 
     async def _process_message(self, incoming_message: aio_pika.IncomingMessage) -> None:
+        """
+        Processes an incoming RabbitMQ message and invokes the registered callback.
+        
+        The message body is decoded to a string if the content type indicates text, JSON, or XML; otherwise, it remains as bytes. The message is wrapped in a `Message` object containing the body, headers, message ID, and timestamp, and passed to the registered callback function, which may be synchronous or asynchronous. If no callback is registered, a warning is printed. Exceptions during processing are caught and logged; the message is acknowledged regardless of errors.
+        """
         async with incoming_message.process(): # Acknowledges message upon exiting context
             try:
                 body: bytes = incoming_message.body
@@ -78,6 +98,18 @@ class RabbitMQConsumer(AbstractConsumer):
                 # To nack: incoming_message.nack(requeue=False)
 
     async def subscribe(self, topic: str, callback: Callable[[Message], Any], exchange_name: str = "default_exchange", queue_name: str | None = None, **kwargs: Any) -> None:
+        """
+        Subscribes to a RabbitMQ topic by declaring and binding a queue to an exchange.
+        
+        Establishes a durable direct exchange and queue, binds the queue to the exchange using the specified topic as the routing key, and registers a callback to process incoming messages. Raises a ConnectionError if not connected to RabbitMQ.
+        
+        Args:
+            topic: The routing key for binding the queue to the exchange.
+            callback: Function to handle received messages; can be synchronous or asynchronous.
+            exchange_name: Name of the exchange to declare and bind to (default is "default_exchange").
+            queue_name: Optional name for the queue; defaults to "{topic}_queue" if not provided.
+            **kwargs: Additional keyword arguments for exchange and queue declaration.
+        """
         if not self.channel:
             raise ConnectionError("RabbitMQ Consumer is not connected.")
 
@@ -109,6 +141,12 @@ class RabbitMQConsumer(AbstractConsumer):
             raise
 
     async def start_consuming(self) -> None:
+        """
+        Begins consuming messages asynchronously from the subscribed RabbitMQ queue.
+        
+        Raises:
+            RuntimeError: If no queue has been subscribed to prior to calling this method.
+        """
         if not self.queue:
             raise RuntimeError("RabbitMQ Consumer: Not subscribed to any queue. Call subscribe() first.")
         if self._consuming_task and not self._consuming_task.done():
@@ -130,6 +168,11 @@ class RabbitMQConsumer(AbstractConsumer):
             raise
 
     async def stop_consuming(self) -> None:
+        """
+        Stops the message consumption task if it is running.
+        
+        If a consumption task is active, it is cancelled and awaited for proper cleanup. If no consumption task is running, a message is printed indicating there is nothing to stop.
+        """
         if self._consuming_task and not self._consuming_task.done():
             print("RabbitMQ Consumer: Stopping consumption...")
             self._consuming_task.cancel()
