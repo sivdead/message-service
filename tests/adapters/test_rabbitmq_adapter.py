@@ -268,4 +268,256 @@ class TestRabbitMQConsumer(unittest.TestCase):
 if __name__ == '__main__':
     # This allows running tests for this file directly.
     # For all tests, use 'python -m unittest discover tests' from root.
-    unittest.main()
+    # unittest.main() # Comment out to allow pytest to run if this file is discovered by pytest
+
+# Pytest-style tests for new functionality (Delayed & Broadcast)
+# These are integration tests and require a running RabbitMQ instance.
+
+import pytest
+import pytest_asyncio # For async fixtures if needed, though direct setup used here
+import uuid
+import os
+import time # For checking message arrival times
+from asyncio import Queue as AsyncQueue # Explicitly use asyncio.Queue
+from src.adapters.rabbitmq import RabbitMQProducer, RabbitMQConsumer # Assuming these are the correct paths
+from src.unified_message_model import Message # Assuming this is the correct path
+import aio_pika # For exceptions and ExchangeType
+
+# AMQP URL for tests - ensure your test RabbitMQ is accessible here
+# For local testing, often "amqp://guest:guest@localhost/"
+# For CI, this might be set via environment variables.
+TEST_AMQP_URL_PYTEST = os.environ.get("MQ_URL_TEST", "amqp://guest:guest@localhost/")
+
+def generate_unique_name(base_name: str) -> str:
+    """Generates a unique name by appending a UUID short hex."""
+    return f"{base_name}_{uuid.uuid4().hex[:8]}"
+
+@pytest.mark.asyncio
+async def test_delayed_message_rabbitmq():
+    """
+    Tests that a message sent with a delay is received after that delay.
+    Requires RabbitMQ server with the 'rabbitmq-delayed-message-exchange' plugin enabled.
+    """
+    producer = RabbitMQProducer(TEST_AMQP_URL_PYTEST)
+    consumer = RabbitMQConsumer(TEST_AMQP_URL_PYTEST)
+
+    exchange_name = generate_unique_name("test_delayed_exchange")
+    routing_key = generate_unique_name("delayed_key") # Also acts as queue name part
+    queue_name = f"{routing_key}_delayed_q"
+    delay_ms = 2000  # 2 seconds
+    tolerance_s = 1.0 # Allow 1s tolerance for processing, network, etc.
+
+    received_messages_queue = AsyncQueue()
+
+    async def message_handler(message: Message):
+        await received_messages_queue.put(message)
+        print(f"Delayed test: Received message {message.id} at {time.time()}")
+
+    try:
+        await producer.connect()
+        await consumer.connect()
+
+        # Attempt to declare the delayed exchange; skip test if plugin is not enabled
+        try:
+            await consumer.channel.declare_exchange(
+                name=exchange_name,
+                type="x-delayed-message",
+                durable=False, # Non-durable for testing
+                auto_delete=True, # Auto-delete for testing
+                arguments={"x-delayed-type": "direct"}
+            )
+            # Also declare on producer's channel if it's a different channel object (it should be)
+            await producer.channel.declare_exchange(
+                name=exchange_name,
+                type="x-delayed-message",
+                durable=False,
+                auto_delete=True,
+                arguments={"x-delayed-type": "direct"}
+            )
+        except aio_pika.exceptions.ChannelClosedByBroker as e:
+            # 503: COMMAND_INVALID (exchange type not found)
+            # 541: INTERNAL_ERROR (sometimes for plugin issues)
+            if e.reply_code == 503 or "exchange type 'x-delayed-message' not found" in str(e):
+                pytest.skip("RabbitMQ delayed message plugin not enabled or x-delayed-message type not found.")
+            raise
+
+        await consumer.subscribe(
+            topic=routing_key,
+            callback=message_handler,
+            exchange_name=exchange_name,
+            queue_name=queue_name,
+            exchange_type="x-delayed-message", # Consumer needs to know this
+            exchange_declare_kwargs={ # Consumer also declares, needs these args
+                "durable": False, "auto_delete": True, "arguments": {"x-delayed-type": "direct"}
+            },
+            queue_declare_kwargs={"durable": False, "auto_delete": True}
+        )
+
+        consumer_task = asyncio.create_task(consumer.start_consuming())
+        await asyncio.sleep(0.1) # Allow consumer to start
+
+        msg_body = f"Delayed test message, delay {delay_ms}ms"
+        msg_to_send = Message(body=msg_body, delay=delay_ms)
+
+        start_time = time.time()
+        print(f"Delayed test: Publishing message {msg_to_send.id} with {delay_ms}ms delay at {start_time}")
+        await producer.publish_message(
+            msg_to_send,
+            topic=routing_key,
+            exchange_name=exchange_name,
+            # Producer also needs to know exchange type for declaration if it's the first
+            # However, our producer's publish_message now takes exchange_type
+            exchange_type="x-delayed-message",
+            exchange_declare_kwargs={
+                "durable": False, "auto_delete": True, "arguments": {"x-delayed-type": "direct"}
+            }
+        )
+
+        # 1. Check that message is NOT received almost immediately
+        try:
+            await asyncio.wait_for(received_messages_queue.get(), timeout=delay_ms / 1000 * 0.5)
+            # If we get here, message was received too early
+            pytest.fail("Delayed message received sooner than expected.")
+        except asyncio.TimeoutError:
+            print("Delayed test: Message not received prematurely, as expected.")
+            pass # Expected
+
+        # 2. Check that message IS received after the delay
+        try:
+            print(f"Delayed test: Waiting for message, timeout {(delay_ms / 1000 * 0.5) + tolerance_s + 1}s")
+            received_msg = await asyncio.wait_for(received_messages_queue.get(), timeout=(delay_ms / 1000 * 0.5) + tolerance_s + 1) # Remaining delay + tolerance
+            end_time = time.time()
+            actual_delay_s = end_time - start_time
+
+            print(f"Delayed test: Message received after {actual_delay_s:.2f}s.")
+            assert received_msg.body == msg_body
+            # Check if actual delay is within expected range (delay_ms/1000 to delay_ms/1000 + tolerance_s)
+            # This check can be flaky due to system load, so give generous bounds or focus on "at least delay"
+            assert actual_delay_s >= (delay_ms / 1000 * 0.9) # e.g. at least 90% of expected delay
+            assert actual_delay_s <= (delay_ms / 1000) + tolerance_s + 1.0 # Upper bound with extra tolerance
+
+        except asyncio.TimeoutError:
+            pytest.fail("Delayed message not received within the expected time window.")
+        finally:
+            if consumer_task and not consumer_task.done():
+                consumer_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError): await consumer_task
+
+    finally:
+        if producer: await producer.disconnect()
+        if consumer: await consumer.disconnect()
+        # Attempt to clean up exchange (if durable=False, auto_delete=True, this might not be strictly needed)
+        # cleanup_channel = await consumer.connection.channel() # Requires consumer to be connected
+        # if cleanup_channel:
+        #     await cleanup_channel.exchange_delete(exchange_name)
+        #     await cleanup_channel.close()
+
+
+@pytest.mark.asyncio
+async def test_broadcast_message_rabbitmq():
+    """
+    Tests that a message sent to a fanout exchange is received by multiple consumers.
+    """
+    producer = RabbitMQProducer(TEST_AMQP_URL_PYTEST)
+    consumer1 = RabbitMQConsumer(TEST_AMQP_URL_PYTEST)
+    consumer2 = RabbitMQConsumer(TEST_AMQP_URL_PYTEST)
+
+    exchange_name = generate_unique_name("test_fanout_exchange")
+    # For fanout, routing key in publish is ignored, but consumers need unique queue names.
+    # The 'topic' parameter in subscribe is used for queue name generation if queue_name is not given.
+    topic_placeholder = generate_unique_name("broadcast_topic")
+
+    received_messages_c1 = AsyncQueue()
+    received_messages_c2 = AsyncQueue()
+
+    async def handler_c1(message: Message): await received_messages_c1.put(message)
+    async def handler_c2(message: Message): await received_messages_c2.put(message)
+
+    consumer1_task = None
+    consumer2_task = None
+
+    try:
+        await producer.connect()
+        await consumer1.connect()
+        await consumer2.connect()
+
+        # Consumers subscribe to the same fanout exchange with unique queues
+        # Queues should be auto-delete for tests if not explicitly named and cleaned up.
+        # Our consumer's subscribe method by default creates durable queues, so specify for tests.
+        common_exchange_kwargs = {"durable": False, "auto_delete": True}
+        common_queue_kwargs = {"durable": False, "auto_delete": True}
+
+        await consumer1.subscribe(
+            topic=topic_placeholder, callback=handler_c1, exchange_name=exchange_name,
+            exchange_type="fanout", queue_name=generate_unique_name(f"{topic_placeholder}_q1"),
+            exchange_declare_kwargs=common_exchange_kwargs, queue_declare_kwargs=common_queue_kwargs
+        )
+        consumer1_task = asyncio.create_task(consumer1.start_consuming())
+
+        await consumer2.subscribe(
+            topic=topic_placeholder, callback=handler_c2, exchange_name=exchange_name,
+            exchange_type="fanout", queue_name=generate_unique_name(f"{topic_placeholder}_q2"),
+            exchange_declare_kwargs=common_exchange_kwargs, queue_declare_kwargs=common_queue_kwargs
+        )
+        consumer2_task = asyncio.create_task(consumer2.start_consuming())
+
+        await asyncio.sleep(0.2) # Allow consumers to start and bind
+
+        msg_body = "Broadcast test message"
+        msg_to_send = Message(body=msg_body)
+
+        await producer.publish_message(
+            msg_to_send,
+            topic=topic_placeholder, # Routing key often ignored by fanout, but method might need it
+            exchange_name=exchange_name,
+            exchange_type="fanout",
+            exchange_declare_kwargs=common_exchange_kwargs
+        )
+
+        timeout_s = 5.0
+        try:
+            msg_c1 = await asyncio.wait_for(received_messages_c1.get(), timeout=timeout_s)
+            msg_c2 = await asyncio.wait_for(received_messages_c2.get(), timeout=timeout_s)
+
+            assert msg_c1.body == msg_body
+            assert msg_c2.body == msg_body
+            assert msg_c1.id == msg_to_send.id # Assuming message ID is preserved
+            assert msg_c2.id == msg_to_send.id
+
+            print(f"Broadcast test: Message '{msg_body}' received by both consumers.")
+        except asyncio.TimeoutError:
+            pytest.fail(f"Broadcast message not received by both consumers within {timeout_s}s.")
+        finally:
+            if consumer1_task and not consumer1_task.done():
+                consumer1_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError): await consumer1_task
+            if consumer2_task and not consumer2_task.done():
+                consumer2_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError): await consumer2_task
+
+    finally:
+        if producer: await producer.disconnect()
+        if consumer1: await consumer1.disconnect()
+        if consumer2: await consumer2.disconnect()
+        # Exchange should auto-delete if declared with auto_delete=True and durable=False
+
+# To run these pytest tests:
+# 1. Ensure RabbitMQ is running and accessible via TEST_AMQP_URL_PYTEST.
+# 2. For delayed messages, ensure the 'rabbitmq-delayed-message-exchange' plugin is enabled on the server.
+# 3. Install pytest and pytest-asyncio: pip install pytest pytest-asyncio
+# 4. Run from the project root: pytest tests/adapters/test_rabbitmq_adapter.py
+
+# Need to import contextlib for suppress
+import contextlib
+
+if __name__ == '__main__':
+    # This allows running tests for this file directly.
+    # For all tests, use 'python -m unittest discover tests' from root
+    # or 'pytest'
+    # To run only unittests: python -m unittest tests/adapters/test_rabbitmq_adapter.py
+    # To run only pytest tests: pytest tests/adapters/test_rabbitmq_adapter.py
+
+    # It's generally better to run pytest from the command line for proper discovery and plugin loading.
+    # If you want to run unittests, you might need to uncomment the unittest.main() call
+    # and comment out the pytest section or run it selectively.
+    pass # Let pytest handle execution primarily

@@ -1,6 +1,6 @@
 import asyncio
 import aio_pika
-from typing import Any, Callable
+from typing import Any, Callable, Optional # Added Optional, though it might exist if Any covers it implicitly sometimes
 from ...mq_abstraction_layer import AbstractConsumer
 from ...unified_message_model import Message
 from datetime import datetime, timezone
@@ -97,30 +97,41 @@ class RabbitMQConsumer(AbstractConsumer):
                 # For now, message is acked by context manager even on error here.
                 # To nack: incoming_message.nack(requeue=False)
 
-    async def subscribe(self, topic: str, callback: Callable[[Message], Any], exchange_name: str = "default_exchange", queue_name: str | None = None, **kwargs: Any) -> None:
+    async def subscribe(
+        self,
+        topic: str, # Used as routing key for direct/topic, ignored for fanout
+        callback: Callable[[Message], Any],
+        exchange_name: str = "default_exchange",
+        queue_name: Optional[str] = None,
+        exchange_type: str = "direct", # e.g., 'direct', 'fanout', 'topic', 'x-delayed-message'
+        **kwargs: Any
+    ) -> None:
         """
-        Subscribes to a RabbitMQ topic by declaring and binding a queue to an exchange.
-        
-        Establishes a durable direct exchange and queue, binds the queue to the exchange using the specified topic as the routing key, and registers a callback to process incoming messages. Raises a ConnectionError if not connected to RabbitMQ.
+        Subscribes to messages by declaring an exchange and a queue, then binding the queue to the exchange.
+
+        The type of exchange (e.g., direct, fanout, topic) can be specified.
+        For 'fanout' exchanges, the topic (routing key) is ignored for binding.
+        For other types, the topic is used as the routing key.
         
         Args:
-            topic: The routing key for binding the queue to the exchange.
-            callback: Function to handle received messages; can be synchronous or asynchronous.
-            exchange_name: Name of the exchange to declare and bind to (default is "default_exchange").
-            queue_name: Optional name for the queue; defaults to "{topic}_queue" if not provided.
+            topic: The topic name, typically used as a routing key.
+            callback: Function to handle received messages.
+            exchange_name: Name of the exchange to declare and bind to.
+            queue_name: Optional name for the queue; defaults to "{topic}_queue_{exchange_type}".
+            exchange_type: Type of the exchange (e.g., 'direct', 'fanout', 'topic').
             **kwargs: Additional keyword arguments for exchange and queue declaration.
         """
         if not self.channel:
             raise ConnectionError("RabbitMQ Consumer is not connected.")
 
         self._callback = callback
-        effective_queue_name = queue_name if queue_name else f"{topic}_queue"
+        effective_queue_name = queue_name if queue_name else f"{topic}_{exchange_type}_queue"
 
         try:
             # Declare the exchange (idempotent)
             exchange = await self.channel.declare_exchange(
                 name=exchange_name,
-                type=aio_pika.ExchangeType.DIRECT, # Must match producer
+                type=exchange_type, # Use specified exchange type
                 durable=True,
                 **kwargs.get("exchange_declare_kwargs", {})
             )
@@ -132,9 +143,11 @@ class RabbitMQConsumer(AbstractConsumer):
                 **kwargs.get("queue_declare_kwargs", {})
             )
 
-            # Bind the queue to the exchange with the topic as routing key
-            await self.queue.bind(exchange, routing_key=topic)
-            print(f"RabbitMQ Consumer: Queue '{self.queue.name}' bound to exchange '{exchange_name}' with routing key '{topic}'.")
+            # Bind the queue to the exchange
+            # For fanout, routing_key should be empty or None (aio-pika might prefer empty string)
+            bind_routing_key = "" if exchange_type == aio_pika.ExchangeType.FANOUT.value else topic
+            await self.queue.bind(exchange, routing_key=bind_routing_key)
+            print(f"RabbitMQ Consumer: Queue '{self.queue.name}' bound to exchange '{exchange_name}' (type: {exchange_type}) with routing key '{bind_routing_key}'.")
 
         except Exception as e:
             print(f"RabbitMQ Consumer: Error subscribing: {e}")
